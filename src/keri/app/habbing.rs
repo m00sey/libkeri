@@ -40,6 +40,111 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+/// Habery provides shared database environments for all its Habitats (Habs).
+///
+/// Habery manages key controller and identifier controller shared configuration,
+/// keystore, and KEL databases. It acts as a factory and manager for Hab instances.
+///
+/// # Lifetime Parameters
+/// * `'db` - Lifetime of the underlying LMDB database connections
+/// * `R` - Generic reader type for the Parser
+///
+/// # Core Resources
+/// * `ks` - Keeper for key storage (LMDB)
+/// * `db` - Baser for KEL and state storage (LMDB)
+/// * `cf` - Configer for configuration file management
+/// * `mgr` - Manager for key creation and rotation
+///
+/// # Message Processing
+/// * `rtr` - Router for reply message routing
+/// * `rvy` - Revery for processing reply 'rpy' messages
+/// * `kvy` - Kevery for local event message processing
+/// * `psr` - Parser for message parsing
+///
+/// # Hab Management
+/// * `habs` - HashMap of Hab instances keyed by prefix
+///
+/// # Example
+/// ```rust,ignore
+/// // Create a new Habery instance
+/// let habery = Habery::new(
+///     "test",      // name
+///     "",          // base
+///     false,       // temp
+///     None,        // ks
+///     None,        // db
+///     None,        // cf
+///     false,       // clear
+///     None,        // head_dir_path
+/// )?;
+///
+/// // Setup with optional seed/aeid
+/// habery.setup(None, None, None, None, None, None, None, false)?;
+///
+/// // Create a new Hab
+/// let hab = habery.make_hab("my_identifier", None, None)?;
+/// ```
+pub struct Habery<'db, R> {
+    /// Name of associated databases
+    pub name: String,
+
+    /// Optional directory path segment inserted before name for hierarchical differentiation
+    pub base: String,
+
+    /// True for testing: temporary storage, weak key stretching
+    pub temp: bool,
+
+    // --- Core Resources ---
+
+    /// LMDB key store for private/public key management
+    pub ks: Arc<Keeper<'db>>,
+
+    /// LMDB database for KEL and state storage
+    pub db: Arc<Baser<'db>>,
+
+    /// Configuration file instance
+    pub cf: Arc<Configer>,
+
+    /// Key manager for creating and rotating keys
+    /// Note: Created during setup(), not in new()
+    pub mgr: Option<Arc<Manager<'db>>>,
+
+    // --- Message Processing Components ---
+
+    /// Router for dispatching reply 'rpy' messages
+    pub rtr: Arc<Router>,
+
+    /// Revery factory for processing reply 'rpy' messages
+    pub rvy: Arc<Revery<'db>>,
+
+    /// Kevery factory for local processing of event messages
+    pub kvy: Arc<Kevery<'db>>,
+
+    /// Parser for parsing local messages for kevery and revery
+    pub psr: Arc<Parser<'db, R>>,
+
+    // TODO: Exchanger for exchange messages (not yet implemented in libkeri)
+    // pub exc: Arc<Exchanger<'db>>,
+
+    // --- Hab Management ---
+
+    /// Hab instances keyed by prefix (qb64)
+    /// - To look up Hab by name, use hab_by_name()
+    /// - To look up Hab by prefix, use hab_by_pre() or access this directly
+    pub habs: HashMap<String, Hab<'db, R>>,
+
+    // --- State Flags ---
+
+    /// True means fully initialized with databases
+    pub inited: bool,
+
+    /// True means free resources by closing on exit
+    pub free: bool,
+
+    // TODO: Internal signator for signing operations (not yet implemented)
+    // _signator: Option<Signator<'db>>,
+}
+
 pub struct BaseHab<'db, R> {
     pub ks: Keeper<'db>,
     pub db: Baser<'db>,
