@@ -97,10 +97,10 @@ pub struct Habery<'db, R> {
     // --- Core Resources ---
 
     /// LMDB key store for private/public key management
-    pub ks: Arc<Keeper<'db>>,
+    pub ks: Arc<&'db Keeper<'db>>,
 
     /// LMDB database for KEL and state storage
-    pub db: Arc<Baser<'db>>,
+    pub db: Arc<&'db Baser<'db>>,
 
     /// Configuration file instance
     pub cf: Arc<Configer>,
@@ -143,6 +143,173 @@ pub struct Habery<'db, R> {
 
     // TODO: Internal signator for signing operations (not yet implemented)
     // _signator: Option<Signator<'db>>,
+}
+
+impl<'db, R> Habery<'db, R> {
+    /// Create a new Habery instance with dependency injection
+    ///
+    /// # Parameters
+    /// * `name` - Alias name for shared environment config databases
+    /// * `base` - Optional directory path segment inserted before name for hierarchy
+    /// * `temp` - True means use temporary/testing resources (store in /tmp, weak key stretching)
+    /// * `ks` - Optional Keeper instance (created if None)
+    /// * `db` - Optional Baser instance (created if None)
+    /// * `cf` - Optional Configer instance (created if None)
+    /// * `clear` - True means remove resource directory upon close
+    /// * `head_dir_path` - Optional directory override for database location
+    ///
+    /// # Returns
+    /// * `Result<Self, KERIError>` - New Habery instance or error
+    ///
+    /// # Notes
+    /// - Manager is NOT created here; it's created during `setup()` which requires seed/aeid
+    /// - If databases are already opened, call `setup()` immediately after construction
+    /// - Parser generic parameter R must be specified by caller (typically Vec<u8> or similar)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let habery: Habery<Vec<u8>> = Habery::new(
+    ///     "test",
+    ///     "",
+    ///     false,
+    ///     None,
+    ///     None,
+    ///     None,
+    ///     false,
+    ///     None,
+    /// )?;
+    /// ```
+    pub fn new(
+        name: impl Into<String>,
+        base: impl Into<String>,
+        temp: bool,
+        ks: Option<Arc<&'db Keeper<'db>>>,
+        db: Option<Arc<&'db Baser<'db>>>,
+        cf: Option<Arc<Configer>>,
+        clear: bool,
+        head_dir_path: Option<std::path::PathBuf>,
+    ) -> Result<Self, KERIError>
+    where
+        R: Default,
+    {
+        let name = name.into();
+        let base = base.into();
+
+        // TODO: Create Keeper if not provided
+        // For now, require injection until we implement Keeper creation
+        let ks = ks.ok_or_else(|| {
+            KERIError::ConfigurationError(
+                "Keeper must be provided (automatic creation not yet implemented)".to_string(),
+            )
+        })?;
+
+        // TODO: Create Baser if not provided
+        // For now, require injection until we implement Baser creation
+        let db = db.ok_or_else(|| {
+            KERIError::ConfigurationError(
+                "Baser must be provided (automatic creation not yet implemented)".to_string(),
+            )
+        })?;
+
+        // TODO: Create Configer if not provided
+        // For now, require injection until we implement Configer creation
+        let cf = cf.ok_or_else(|| {
+            KERIError::ConfigurationError(
+                "Configer must be provided (automatic creation not yet implemented)".to_string(),
+            )
+        })?;
+
+        // Create Router
+        let rtr = Arc::new(Router::new(None));
+
+        // Create Revery with database and router (clone Arc, not inner value)
+        let rvy = Arc::new(Revery::new(
+            db.clone(),
+            None,  // router - will be connected later
+            None,  // cues
+            Some(false), // lax
+            Some(true),  // local
+        ));
+
+        // Create Kevery with database
+        let kvy = Arc::new(Kevery::new(
+            None,        // cues
+            db.clone(),
+            None,        // rvy - TODO: wire up properly
+            Some(false), // lax
+            Some(true),  // local
+            None,        // cloned
+            None,        // direct
+            None,        // check
+        )?);
+
+        // TODO: Register reply routes
+        // In keripy: self.kvy.registerReplyRoutes(router=self.rtr)
+        // This requires implementing route registration
+
+        // TODO: Create Exchanger (not yet implemented in libkeri)
+        // In keripy: self.exc = exchanging.Exchanger(hby=self, handlers=[])
+
+        // TODO: Create Parser with handlers
+        // For now, Parser creation is deferred because it requires proper handler setup
+        // In a real implementation, we would need:
+        // - Kevery wrapped in Arc<Mutex<>>
+        // - NoOp handlers for tevery, exchanger, revery, verifier
+        // - Proper connection between components
+        //
+        // Temporary workaround: we'll need to add a method to set up the parser later
+        // or require it to be passed in once proper handlers are implemented
+
+        // Create a minimal NoOp handler for Parser
+        struct NoOpHandler;
+        impl crate::keri::core::parsing::MessageHandler for NoOpHandler {
+            fn handle<'life0, 'async_trait>(
+                &'life0 self,
+                _msg: crate::keri::core::parsing::Message,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<(), KERIError>> + Send + 'async_trait>,
+            >
+            where
+                'life0: 'async_trait,
+                Self: 'async_trait,
+            {
+                Box::pin(async move { Ok(()) })
+            }
+        }
+
+        let psr = Arc::new(Parser::new(
+            R::default(),
+            true,  // framed
+            false, // pipeline
+            crate::keri::core::parsing::Handlers {
+                kevery: Arc::new(std::sync::Mutex::new(
+                    Kevery::new(None, db.clone(), None, Some(false), Some(true), None, None, None)?
+                )),
+                tevery: Arc::new(NoOpHandler),
+                exchanger: Arc::new(NoOpHandler),
+                revery: Arc::new(NoOpHandler),
+                verifier: Arc::new(NoOpHandler),
+                local: true,
+            },
+        ));
+
+        Ok(Habery {
+            name,
+            base,
+            temp,
+            ks,
+            db,
+            cf,
+            mgr: None, // Created during setup()
+            rtr,
+            rvy,
+            kvy,
+            psr,
+            habs: HashMap::new(),
+            inited: false,
+            free: false,
+        })
+    }
 }
 
 pub struct BaseHab<'db, R> {
