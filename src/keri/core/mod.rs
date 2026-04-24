@@ -1,4 +1,5 @@
 pub mod errors;
+pub mod events;
 pub mod eventing;
 pub mod filing;
 pub mod parsing;

@@ -6,6 +6,7 @@ use crate::cesr::prefixer::Prefixer;
 use crate::cesr::saider::Saider;
 use crate::cesr::seqner::Seqner;
 use crate::cesr::verfer::Verfer;
+use crate::keri::core::events::{EventBus, KeriEvent};
 use crate::keri::core::eventing::kever::Kever;
 use crate::keri::core::eventing::{verify_sigs, ReplyEventBuilder};
 use crate::keri::core::parsing::Trqs;
@@ -32,7 +33,11 @@ pub struct Kevery {
     pub db: Arc<Baser>,
 
     /// Notices of events needing receipt or requests needing response
+    /// (legacy — being replaced by events bus)
     pub cues: VecDeque<Cue>,
+
+    /// Typed event bus for notifying consumers of KERI events
+    pub events: Arc<EventBus>,
 
     /// Optional recovery module
     pub rvy: Option<Rvy>,
@@ -92,6 +97,7 @@ impl Kevery {
     /// # Parameters
     /// * `cues` - Optional cues to initialize with
     /// * `db` - Database instance
+    /// * `events` - Optional event bus for notifying consumers. If None, a default (no-op) bus is used.
     /// * `rvy` - Optional recovery module
     /// * `lax` - True means operate in promiscuous (unrestricted) mode
     /// * `local` - True means event source is local (protected) for validation
@@ -101,6 +107,7 @@ impl Kevery {
     pub fn new(
         cues: Option<VecDeque<Cue>>,
         db: Arc<Baser>,
+        events: Option<Arc<EventBus>>,
         rvy: Option<Rvy>,
         lax: Option<bool>,
         local: Option<bool>,
@@ -112,6 +119,7 @@ impl Kevery {
 
         Ok(Self {
             cues: cues.unwrap_or_else(VecDeque::new),
+            events: events.unwrap_or_else(|| Arc::new(EventBus::new())),
             db,
             rvy,
             lax: lax.unwrap_or(true),
@@ -235,6 +243,15 @@ impl Kevery {
                 // invalid by raising an error or have been escrowed as not
                 // yet complete enough to decide their validity.
 
+                // Emit typed KeyStateNew event
+                if let Some(kever) = self.kevers.get(&pre) {
+                    self.events.emit(&KeriEvent::KeyStateNew {
+                        prefix: pre.clone(),
+                        state: kever.state().ok(),
+                        serder: serder.clone(),
+                    });
+                }
+
                 // Handle cues for receipt or notice
                 if self.direct || self.lax || !self.db.prefixes.contains(&pre) {
                     // Create cue for receipt controller or watcher
@@ -242,10 +259,18 @@ impl Kevery {
                         kin: "receipt".to_string(),
                         serder: serder.clone(),
                     });
+                    self.events.emit(&KeriEvent::ReceiptNeeded {
+                        prefix: pre.clone(),
+                        serder: serder.clone(),
+                    });
                 } else if !self.direct {
                     // Notice of new event
                     self.cues.push_back(Cue {
                         kin: "notice".to_string(),
+                        serder: serder.clone(),
+                    });
+                    self.events.emit(&KeriEvent::EventNotice {
+                        prefix: pre.clone(),
                         serder: serder.clone(),
                     });
                 }
@@ -259,6 +284,10 @@ impl Kevery {
                         kin: "witness".to_string(),
                         serder: serder.clone(),
                     });
+                    self.events.emit(&KeriEvent::WitnessNeeded {
+                        prefix: pre.clone(),
+                        serder: serder.clone(),
+                    });
                 }
             } else {
                 // Not inception so can't verify sigs etc, add to out-of-order escrow
@@ -270,6 +299,11 @@ impl Kevery {
                     Some(&wigers.unwrap_or_default()),
                     local,
                 )?;
+
+                self.events.emit(&KeriEvent::OutOfOrder {
+                    prefix: pre.clone(),
+                    sn,
+                });
 
                 return Err(
                     KERIError::OutOfOrderError(format!("Out-of-order event={:?}.", ked)).into(),
@@ -411,6 +445,13 @@ impl Kevery {
                     // given by serder together with its attachments has been
                     // accepted as valid with finality.
 
+                    // Emit typed KeyStateUpdated event
+                    self.events.emit(&KeriEvent::KeyStateUpdated {
+                        prefix: pre.clone(),
+                        state: kever.state().ok(),
+                        serder: serder.clone(),
+                    });
+
                     // Handle cues for receipt or notice
                     if self.direct || self.lax || !self.db.prefixes.contains(&pre) {
                         // Create cue for receipt controller or watcher
@@ -418,10 +459,18 @@ impl Kevery {
                             kin: "receipt".to_string(),
                             serder: serder.clone(),
                         });
+                        self.events.emit(&KeriEvent::ReceiptNeeded {
+                            prefix: pre.clone(),
+                            serder: serder.clone(),
+                        });
                     } else if !self.direct {
                         // Notice of new event
                         self.cues.push_back(Cue {
                             kin: "notice".to_string(),
+                            serder: serder.clone(),
+                        });
+                        self.events.emit(&KeriEvent::EventNotice {
+                            prefix: pre.clone(),
                             serder: serder.clone(),
                         });
                     }
@@ -433,6 +482,10 @@ impl Kevery {
                         // one receipt is generated not two
                         self.cues.push_back(Cue {
                             kin: "witness".to_string(),
+                            serder: serder.clone(),
+                        });
+                        self.events.emit(&KeriEvent::WitnessNeeded {
+                            prefix: pre.clone(),
                             serder: serder.clone(),
                         });
                     }
@@ -1360,6 +1413,7 @@ impl Kevery {
 pub struct KeveryBuilder {
     db: Arc<Baser>,
     cues: Option<VecDeque<Cue>>,
+    events: Option<Arc<EventBus>>,
     rvy: Option<Rvy>,
     lax: Option<bool>,
     local: Option<bool>,
@@ -1374,6 +1428,7 @@ impl KeveryBuilder {
         Self {
             db,
             cues: None,
+            events: None,
             rvy: None,
             lax: None,
             local: None,
@@ -1381,6 +1436,12 @@ impl KeveryBuilder {
             direct: None,
             check: None,
         }
+    }
+
+    /// Set the event bus for the Kevery instance
+    pub fn with_events(mut self, events: Arc<EventBus>) -> Self {
+        self.events = Some(events);
+        self
     }
 
     /// Set the cues for the Kevery instance
@@ -1430,6 +1491,7 @@ impl KeveryBuilder {
         Kevery::new(
             self.cues,
             self.db.clone(),
+            self.events,
             self.rvy,
             self.lax,
             self.local,
@@ -1461,6 +1523,7 @@ mod tests {
         let kevery = Kevery::new(
             None,
             Arc::new(db),
+            None, // events
             None,
             Some(true),
             Some(false),

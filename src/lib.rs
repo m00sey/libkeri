@@ -29,6 +29,9 @@ pub use crate::keri::app::keeping::{Keeper, Manager};
 pub use crate::keri::app::configing::Configer;
 pub use crate::keri::app::habbing::{BaseHab, Hab};
 
+// Core - events (callback system)
+pub use crate::keri::core::events::{EscrowType, EventAction, EventBus, KeriEvent, KeriObserver};
+
 // Core - eventing
 pub use crate::keri::core::eventing::kever::Kever;
 pub use crate::keri::core::eventing::kevery::Kevery;

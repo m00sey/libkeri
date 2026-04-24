@@ -1928,9 +1928,10 @@ mod tests {
 
         // Create an explicit Kevery instance with more relaxed settings
         let kevery = Kevery::new(
-            None,        // No recovery module
+            None,        // cues
             db.clone(),  // Database reference
-            None,        // Default cues
+            None,        // events
+            None,        // rvy
             Some(true),  // lax mode - set to true to be more forgiving
             Some(false), // local mode
             Some(false), // cloned mode
@@ -2729,6 +2730,7 @@ mod tests {
         let kevery = Kevery::new(
             None,
             val_db.clone(),
+            None, // events
             None,
             Some(false),
             Some(false),
@@ -2801,6 +2803,7 @@ mod tests {
             let kevery = Kevery::new(
                 None,
                 db,
+                None, // events
                 None,
                 Some(false),
                 Some(false),
